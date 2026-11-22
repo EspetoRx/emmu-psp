@@ -1,0 +1,36 @@
+Origem dos artefatos vendorizados em vendor/ppsspp-ejs/
+=======================================================
+
+Runtime PPSSPP compilado para Emscripten/RetroArch, distribuído como core do
+EmulatorJS. Não editar os arquivos desta pasta: patches, quando necessários,
+devem ficar em js/adapter.js.
+
+Fonte
+-----
+- Projeto: https://github.com/EmulatorJS/ppsspp
+- Distribuição: https://www.npmjs.com/package/@emulatorjs/core-ppsspp/v/4.2.3
+- URL do pacote do core:
+  https://cdn.emulatorjs.org/stable/data/cores/ppsspp-thread-wasm.data
+- Artefato interno: RetroArch 1.21.0 + PPSSPP libretro, build.json versão 2.0.2
+  (arquivos datados de 2025-06-14).
+- Assets PPSSPP (flash0, fontes, shaders, compat.ini etc.):
+  https://cdn.emulatorjs.org/stable/data/cores/ppsspp-assets.zip
+- Licença do runtime: GPL-2.0-or-later, com avisos adicionais do PSPSDK.
+  Texto incluído em vendor/ppsspp-ejs/license.txt.
+
+Hashes SHA-256 (conferidos em 2026-11-22)
+-----------------------------------------
+de8c16f66c88788a8b27741fcff0406c23fd83456c5c1b15d7d4acfd0c3d2bc6  ppsspp_libretro.js
+1df02e01268cacf6efa28ff9bcdfb7f05a8a4a36592e296a67c01b7d2cb37cba  ppsspp_libretro.wasm
+046f52792a06e3b6d07c8ff3961f11271102080760be4b2c38b1a3260054bad4  ppsspp-assets.zip
+ff265754cbb2e0d3b674f90a79ef5bbaa1f7f1075aec9f5e241524520e5049fa  license.txt
+f2215d6446f2f8bb33e3d673b65ef1dc6da6ebd7f92ed8d0a649a8b8852196fe  core.json
+27d8d02b31afc26c5beeb9dd6a8603b1b2d05c447fef13288e12ef2066090996  build.json
+
+Obrigações de licença
+---------------------
+O Emmu já distribui cores GPL. Este módulo é licenciado como GPL-3.0-or-later
+(LICENSE na raiz do crate), compatível com o GPL-2.0-or-later do PPSSPP. O texto
+de licença do core e os avisos do PSPSDK precisam continuar no bundle desktop e
+web. Se os binários forem atualizados, atualize também este arquivo e o
+THIRD-PARTY-NOTICES.txt do desktop.
