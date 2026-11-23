@@ -8,24 +8,31 @@ devem ficar em js/adapter.js.
 Fonte
 -----
 - Projeto: https://github.com/EmulatorJS/ppsspp
-- Distribuição: https://www.npmjs.com/package/@emulatorjs/core-ppsspp/v/4.2.3
+- Distribuição: release 4.3.0-pre do EmulatorJS
+  https://cdn.emulatorjs.org/releases/4.3.0-pre.7z (publicada em 2026-05-17)
 - URL do pacote do core:
-  https://cdn.emulatorjs.org/stable/data/cores/ppsspp-thread-wasm.data
-- Artefato interno: RetroArch 1.21.0 + PPSSPP libretro, build.json versão 2.0.2
-  (arquivos datados de 2025-06-14).
+  https://cdn.emulatorjs.org/4.3.0-pre/data/cores/ppsspp-thread-wasm.data
+- Artefato interno: PPSSPP libretro em Emscripten (pthreads + WebGL2),
+  build.json versão 2.0.3, minimumEJSVersion 4.3.0 (arquivos datados de
+  2026-05-17). Substitui o build 2.0.2 de 2025-06-14: o core antigo renderizava
+  todo o texto dos jogos e dos diálogos PSP como retângulos preenchidos, enquanto
+  o PPSSPP 1.20.x oficial e este build mais novo exibem os glifos corretamente.
 - Assets PPSSPP (flash0, fontes, shaders, compat.ini etc.):
-  https://cdn.emulatorjs.org/stable/data/cores/ppsspp-assets.zip
+  https://cdn.emulatorjs.org/4.3.0-pre/data/cores/ppsspp-assets.zip
+  As PGFs e os atlas continuam byte a byte idênticos aos do PPSSPP v1.20.4;
+  a diferença relevante é o binário do core (correções de fonte/PPGe de 2026).
 - Licença do runtime: GPL-2.0-or-later, com avisos adicionais do PSPSDK.
-  Texto incluído em vendor/ppsspp-ejs/license.txt.
+  Texto incluído em vendor/ppsspp-ejs/license.txt (inalterado em relação ao
+  build anterior).
 
-Hashes SHA-256 (conferidos em 2026-11-22)
+Hashes SHA-256 (conferidos em 2026-11-23)
 -----------------------------------------
-de8c16f66c88788a8b27741fcff0406c23fd83456c5c1b15d7d4acfd0c3d2bc6  ppsspp_libretro.js
-1df02e01268cacf6efa28ff9bcdfb7f05a8a4a36592e296a67c01b7d2cb37cba  ppsspp_libretro.wasm
-046f52792a06e3b6d07c8ff3961f11271102080760be4b2c38b1a3260054bad4  ppsspp-assets.zip
+fb876f3fb5e360024a427fed84ff24fb62a1b22330dd18ba7938ea6cbbf3cca8  ppsspp_libretro.js
+aba2481d09da7e55b724ce68bc3591b686cdac8375cdf6f87522d27c3759edbb  ppsspp_libretro.wasm
+360f2a62b4bbb3e1e29f7afbce4d635ad1f225b821b011792dcde32af410d393  ppsspp-assets.zip
 ff265754cbb2e0d3b674f90a79ef5bbaa1f7f1075aec9f5e241524520e5049fa  license.txt
-f2215d6446f2f8bb33e3d673b65ef1dc6da6ebd7f92ed8d0a649a8b8852196fe  core.json
-27d8d02b31afc26c5beeb9dd6a8603b1b2d05c447fef13288e12ef2066090996  build.json
+5c8823f2d049fdf883d55fef34e54e230caa1789a739aea5e41f472f96ff35a7  core.json
+77e514b67e5b25a1255d28d8f2438b2304eb8d82de8161acf6b3d4f3d62a3f00  build.json
 
 Obrigações de licença
 ---------------------

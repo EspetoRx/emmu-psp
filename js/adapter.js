@@ -266,6 +266,7 @@ export class PspAdapter {
     this.captureContext = null;
     this.wasmUrl = null;
     this.disposed = false;
+    this.disposing = false;
     this.volume = 1;
     this.saveWorker = null;
     this.saveWorkerSeq = 0;
@@ -331,6 +332,7 @@ export class PspAdapter {
   }
 
   async initialize() {
+    this.disposing = false;
     if (globalThis.__emmuPspVerboseLogs) {
       console.log("[emmu-psp] environment", {
         href: location.href,
@@ -420,6 +422,9 @@ export class PspAdapter {
         if (globalThis.__emmuPspVerboseLogs) console.warn("[psp]", message);
       },
       onAbort: (reason) => {
+        // dispose() aborta o módulo de propósito (troca de jogo/restart); não
+        // é uma falha do core.
+        if (this.disposing) return;
         console.error("[emmu-psp] onAbort", reason, new Error().stack);
       },
       locateFile: (name) => (name.endsWith(".wasm") ? this.wasmUrl : name),
@@ -771,17 +776,30 @@ export class PspAdapter {
       throw new Error("O emulador PSP já foi encerrado.");
     }
     this.saveStartedAt = performance.now();
-    // O RetroArch só registra o caminho do save state depois que o core já
-    // processou pelo menos um ciclo. No autosave que acontece junto com o
-    // primeiro frame isso ainda não aconteceu; repetir cmd_save_state cobre a
-    // inicialização sem afetar saves feitos durante a partida.
-    let info = "";
+    if (globalThis.__emmuPspVerboseLogs) {
+      console.log("[emmu-psp] saveState: entrada");
+    }
+    // O core EJS publica o estado em save_state_info() (é o que o próprio
+    // GameManager.getState() faz). No build 2.0.3 essa exportação passou pelo
+    // Asyncify: o cwrap devolve uma Promise quando a chamada desenrola o wasm.
+    // Sem o await, o regex abaixo recebia "[object Promise]" e o save falhava.
+    // cmd_save_state() só é chamado se ainda não houver estado publicado, e
+    // nunca em loop: chamadas concorrentes com o Asyncify corrompem a memória.
+    let info = (await this.functions.saveStateInfo()) || "";
+    if (globalThis.__emmuPspVerboseLogs) {
+      console.log("[emmu-psp] saveStateInfo inicial", info);
+    }
+    if (!/^\d+\|\d+\|1/.test(info)) {
+      await this.functions.cmdSaveState();
+      info = (await this.functions.saveStateInfo()) || "";
+      if (globalThis.__emmuPspVerboseLogs) {
+        console.log("[emmu-psp] saveStateInfo após cmd", info);
+      }
+    }
     const deadline = performance.now() + 1500;
-    while (performance.now() < deadline && !this.disposed) {
-      this.functions.cmdSaveState();
-      info = this.functions.saveStateInfo() || "";
-      if (/^\d+\|\d+/.test(info)) break;
+    while (performance.now() < deadline && !this.disposed && !/^\d+\|\d+\|1/.test(info)) {
       await new Promise((resolve) => setTimeout(resolve, 50));
+      info = (await this.functions.saveStateInfo()) || "";
     }
     const [sizeText, pointerText] = info.split("|");
     const size = Number(sizeText);
@@ -811,7 +829,7 @@ export class PspAdapter {
       // O buffer original foi transferido ao worker; se ele falhou, relê o
       // estado da HEAP antes de comprimir no fallback síncrono.
       const [retrySizeText, retryPointerText] = (
-        this.functions.saveStateInfo() || info
+        (await this.functions.saveStateInfo()) || info
       ).split("|");
       const retrySize = Number(retrySizeText);
       const retryPointer = Number(retryPointerText);
@@ -910,10 +928,17 @@ export class PspAdapter {
     if (this.disposed || !this.functions) {
       throw new Error("O emulador PSP já foi encerrado.");
     }
-    this.functions.restart();
-    this.module.resumeMainLoop?.();
+    // system_restart() do build 2.0.3 derruba uma worker pthread
+    // ("RuntimeError: null function") e o main thread fica preso esperando a
+    // worker. Recriar o runtime é mais lento, mas é o caminho seguro: o mesmo
+    // fluxo dispose + initialize já usado ao trocar de jogo.
+    if (globalThis.__emmuPspVerboseLogs) {
+      console.log("[emmu-psp] restart: recriando runtime");
+    }
+    this.dispose();
+    this.disposed = false;
+    await this.initialize();
     this.setVolume(this.volume);
-    await this.waitForFirstFrame();
   }
 
   async capturePreview() {
@@ -946,6 +971,7 @@ export class PspAdapter {
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
+    this.disposing = true;
     this.disableSaveWorker();
     try {
       this.functions?.toggleMainLoop(0);

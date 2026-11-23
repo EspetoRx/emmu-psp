@@ -132,6 +132,12 @@ são instaladas em `/PPSSPP/flash0/font`. O core libretro resolve `flash0:` como
 `/PPSSPP`. Sem isso, qualquer mensagem de qualquer jogo aparece como quadrados
 preenchidos e linhas irreconhecíveis.
 
+O binário do core também importa: o build EmulatorJS 2.0.2 (2025-06-14,
+PPSSPP ~1.18/1.19) renderizava os glifos como retângulos sólidos mesmo com as
+PGFs corretas. O build 2.0.3 (release 4.3.0-pre, 2026-05-17) vendorizado hoje
+exibe o texto corretamente, igual ao PPSSPP 1.20.4 oficial. As fontes dos dois
+bundles são idênticas — a correção está no core, não nos assets.
+
 ## Build
 
 `npm run build:wasm` na UI copia os artefatos deste crate para
