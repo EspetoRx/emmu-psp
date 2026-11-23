@@ -259,6 +259,67 @@ export class PspAdapter {
     this.wasmUrl = null;
     this.disposed = false;
     this.volume = 1;
+    this.saveWorker = null;
+    this.saveWorkerSeq = 0;
+    this.saveWorkerPending = new Map();
+  }
+
+  createSaveWorker() {
+    if (this.saveWorker || this.disposed || typeof Worker === "undefined") {
+      return;
+    }
+    try {
+      const worker = new Worker(new URL("./save.worker.js", import.meta.url), {
+        type: "module",
+      });
+      worker.onmessage = (event) => {
+        const { id, error, ...result } = event.data || {};
+        const pending = this.saveWorkerPending.get(id);
+        if (!pending) return;
+        this.saveWorkerPending.delete(id);
+        if (error) pending.reject(new Error(error));
+        else pending.resolve(result);
+      };
+      worker.onerror = (event) => {
+        if (globalThis.__emmuPspVerboseLogs) {
+          console.warn("[emmu-psp] worker de save falhou", event.message);
+        }
+        this.disableSaveWorker();
+      };
+      this.saveWorker = worker;
+    } catch (error) {
+      if (globalThis.__emmuPspVerboseLogs) {
+        console.warn("[emmu-psp] worker de save indisponível", error);
+      }
+    }
+  }
+
+  disableSaveWorker() {
+    const worker = this.saveWorker;
+    this.saveWorker = null;
+    for (const pending of this.saveWorkerPending.values()) {
+      pending.reject(new Error("worker de save encerrado"));
+    }
+    this.saveWorkerPending.clear();
+    try {
+      worker?.terminate();
+    } catch {
+      // worker já morto
+    }
+  }
+
+  async callSaveWorker(payload, transfer = []) {
+    this.createSaveWorker();
+    if (!this.saveWorker) return null;
+    const id = ++this.saveWorkerSeq;
+    try {
+      return await new Promise((resolve, reject) => {
+        this.saveWorkerPending.set(id, { resolve, reject });
+        this.saveWorker.postMessage({ id, ...payload }, transfer);
+      });
+    } catch {
+      return null;
+    }
   }
 
   async initialize() {
@@ -624,6 +685,7 @@ export class PspAdapter {
     if (this.disposed || !this.functions) {
       throw new Error("O emulador PSP já foi encerrado.");
     }
+    this.saveStartedAt = performance.now();
     // O RetroArch só registra o caminho do save state depois que o core já
     // processou pelo menos um ciclo. No autosave que acontece junto com o
     // primeiro frame isso ainda não aconteceu; repetir cmd_save_state cobre a
@@ -643,13 +705,50 @@ export class PspAdapter {
       throw new Error(`O PPSSPP não retornou um save state válido: ${info}`);
     }
     const raw = this.module.HEAPU8.subarray(pointer, pointer + size).slice();
-    const compressed = gzipSync(raw, { level: 6 });
-    const saveData = zipSync(
-      listFiles(
-        this.module.FS,
-        "/data/saves/PPSSPP/PSP/SAVEDATA",
-      ),
+    const rawSize = raw.length;
+    const saveFiles = listFiles(
+      this.module.FS,
+      "/data/saves/PPSSPP/PSP/SAVEDATA",
     );
+    // gzip/zip rodam no worker de save: na main thread eles bloqueavam o
+    // WebView por centenas de ms e o vídeo/áudio engasgavam no autosave.
+    // Transferir o buffer evita clonar ~40 MiB só para entregar ao worker.
+    const result = await this.callSaveWorker(
+      { raw, saveFiles },
+      [raw.buffer],
+    );
+    let compressed;
+    let saveData;
+    if (result?.compressed && result?.saveData) {
+      compressed = result.compressed;
+      saveData = result.saveData;
+    } else {
+      // O buffer original foi transferido ao worker; se ele falhou, relê o
+      // estado da HEAP antes de comprimir no fallback síncrono.
+      const [retrySizeText, retryPointerText] = (
+        this.functions.saveStateInfo() || info
+      ).split("|");
+      const retrySize = Number(retrySizeText);
+      const retryPointer = Number(retryPointerText);
+      const fallbackRaw =
+        Number.isFinite(retrySize) && retrySize > 0 &&
+        Number.isFinite(retryPointer)
+          ? this.module.HEAPU8
+              .subarray(retryPointer, retryPointer + retrySize)
+              .slice()
+          : new Uint8Array(0);
+      compressed = gzipSync(fallbackRaw, { level: 1 });
+      saveData = zipSync(saveFiles, { level: 1 });
+    }
+    if (globalThis.__emmuPspVerboseLogs) {
+      console.log("[emmu-psp] save", {
+        coreMs: Math.round(performance.now() - this.saveStartedAt),
+        rawBytes: rawSize,
+        compressedBytes: compressed.length,
+        saveDataBytes: saveData.length,
+        worker: Boolean(result),
+      });
+    }
     const encoder = new TextEncoder();
     return concat([
       encoder.encode(SAVE_MAGIC),
@@ -735,6 +834,15 @@ export class PspAdapter {
   async capturePreview() {
     const pixels = this.capturePixels();
     if (!pixels.length) return new Uint8Array(0);
+    // A codificação PNG também sai da main thread. O readPixels é rápido, mas
+    // toDataURL(ImageData) de 480×272 custava alguns ms a cada autosave.
+    const result = await this.callSaveWorker({
+      pixels,
+      width: FRAME_WIDTH,
+      height: FRAME_HEIGHT,
+    });
+    if (result?.preview) return result.preview;
+
     this.captureContext.putImageData(
       new ImageData(pixels, FRAME_WIDTH, FRAME_HEIGHT),
       0,
@@ -753,6 +861,7 @@ export class PspAdapter {
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
+    this.disableSaveWorker();
     try {
       this.functions?.toggleMainLoop(0);
       this.module?.pauseMainLoop?.();

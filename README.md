@@ -96,12 +96,26 @@ O estado bruto do PPSSPP tem ~40 MiB e comprime bem; a save data do cartão de
 memória é guardada dentro do mesmo envelope porque o `.ppst` não a inclui. O
 load rejeita magic/versão desconhecidos e comprimentos inconsistentes.
 
+### Autosave sem travar a emulação
+
+O core roda obrigatoriamente na main thread (WebGL2 + pthreads), mas o
+pós-processamento do save roda em `js/save.worker.js`: gzip do estado, ZIP da
+save data e codificação PNG do preview. O adaptador copia o estado bruto da
+HEAPU8, envia ao worker e monta o envelope com o resultado; se o worker não
+carregar, há fallback síncrono com nível de compressão `1`.
+
+O autosave de 5 s não tira mais preview do canvas WebGL — a miniatura existente
+é reaproveitada. O save manual continua capturando um novo preview. Com
+`globalThis.__emmuPspVerboseLogs = true`, o log `[emmu-psp] save` mostra
+`coreMs`, tamanhos e se o worker foi usado.
+
 ## Build
 
 `npm run build:wasm` na UI copia os artefatos deste crate para
-`platforms/web/ui/public/wasm/psp/` e o adaptador para
-`platforms/web/ui/src/wasm/psp/adapter.js`. `src/wasm/` e `public/wasm/` são
-gerados e não devem ser editados.
+`platforms/web/ui/public/wasm/psp/` e o adaptador **e o worker** para
+`platforms/web/ui/src/wasm/psp/`. `src/wasm/` e `public/wasm/` são gerados e não
+devem ser editados. O Vite empacota o worker como `dist/assets/save.worker-*.js`;
+o `postbuild` valida que ele está presente.
 
 ## Validação
 
