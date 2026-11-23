@@ -75,7 +75,10 @@ const PTHREAD_POOL_NEEDLE = "var pthreadPoolSize=32;";
 const THREADING_SUPPORT_NEEDLE =
   'var _emscripten_has_threading_support=()=>typeof SharedArrayBuffer!="undefined";';
 
+let sharedMemoryCloneable = null;
+
 function canCloneSharedMemory() {
+  if (sharedMemoryCloneable !== null) return sharedMemoryCloneable;
   try {
     const memory = new WebAssembly.Memory({
       initial: 1,
@@ -85,26 +88,29 @@ function canCloneSharedMemory() {
     const module = new WebAssembly.Module(
       new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]),
     );
-    const worker = new Worker(
-      URL.createObjectURL(
-        new Blob(["self.onmessage=function(){}"], { type: "text/javascript" }),
-      ),
+    const workerUrl = URL.createObjectURL(
+      new Blob(["self.onmessage=function(){}"], { type: "text/javascript" }),
     );
+    const worker = new Worker(workerUrl);
+    let ok = true;
     try {
       worker.postMessage({ wasmMemory: memory });
     } catch {
-      worker.terminate();
-      return false;
+      ok = false;
     }
-    try {
-      worker.postMessage({ wasmModule: module });
-    } catch {
-      worker.terminate();
-      return false;
+    if (ok) {
+      try {
+        worker.postMessage({ wasmModule: module });
+      } catch {
+        ok = false;
+      }
     }
     worker.terminate();
-    return true;
+    URL.revokeObjectURL(workerUrl);
+    sharedMemoryCloneable = ok;
+    return ok;
   } catch {
+    sharedMemoryCloneable = false;
     return false;
   }
 }
@@ -134,6 +140,11 @@ function loadRuntime() {
     runtimeLoadPromise = (async () => {
       let scriptUrl = `${RUNTIME_BASE}ppsspp_libretro.js`;
       if (!canCloneSharedMemory()) {
+        if (globalThis.__emmuPspVerboseLogs) {
+          console.warn(
+            "[emmu-psp] clone de SharedArrayBuffer indisponível; carregando runtime sem pthreads",
+          );
+        }
         // WebKit sem clone de SharedArrayBuffer: o Emscripten não consegue
         // inicializar os pthreads, então carregamos um runtime sem pool e sem
         // suporte a threads. O blob permanece vivo porque o Emscripten guarda
@@ -251,6 +262,16 @@ export class PspAdapter {
   }
 
   async initialize() {
+    if (globalThis.__emmuPspVerboseLogs) {
+      console.log("[emmu-psp] environment", {
+        href: location.href,
+        coi: globalThis.crossOriginIsolated,
+        sab: typeof SharedArrayBuffer,
+        secure: globalThis.isSecureContext,
+        clone: canCloneSharedMemory(),
+        base: RUNTIME_BASE,
+      });
+    }
     if (this.disposed) throw new Error("O emulador PSP já foi encerrado.");
     if (typeof window === "undefined" || typeof document === "undefined") {
       throw new Error("O runtime PSP precisa de um DOM (window/document).");
@@ -324,6 +345,9 @@ export class PspAdapter {
       },
       printErr: (message) => {
         if (globalThis.__emmuPspVerboseLogs) console.warn("[psp]", message);
+      },
+      onAbort: (reason) => {
+        console.error("[emmu-psp] onAbort", reason, new Error().stack);
       },
       locateFile: (name) => (name.endsWith(".wasm") ? this.wasmUrl : name),
       getSavExt: () => ".srm",
