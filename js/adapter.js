@@ -59,6 +59,25 @@ const ANALOG_BUTTONS = new Set([
 
 let runtimeLoadPromise = null;
 
+// WKWebView no macOS (esquema tauri://) esconde o global SharedArrayBuffer e
+// reporta crossOriginIsolated=false, mesmo com pthreads disponíveis. O construtor
+// nativo continua acessível pelo buffer de uma WebAssembly.Memory compartilhada;
+// recuperá-lo aqui evita rejeitar um WebView que suporta threads via WASM.
+function ensureSharedArrayBuffer() {
+  if (typeof SharedArrayBuffer === "function") return true;
+  try {
+    const sharedMemory = new WebAssembly.Memory({
+      initial: 1,
+      maximum: 1,
+      shared: true,
+    });
+    globalThis.SharedArrayBuffer = sharedMemory.buffer.constructor;
+    return typeof SharedArrayBuffer === "function";
+  } catch {
+    return false;
+  }
+}
+
 function loadRuntime() {
   if (typeof globalThis.EJS_Runtime === "function") return Promise.resolve();
   if (!runtimeLoadPromise) {
@@ -152,9 +171,10 @@ export class PspAdapter {
     if (typeof window === "undefined" || typeof document === "undefined") {
       throw new Error("O runtime PSP precisa de um DOM (window/document).");
     }
-    if (!globalThis.crossOriginIsolated || typeof SharedArrayBuffer !== "function") {
+    if (!ensureSharedArrayBuffer()) {
       throw new Error(
-        "PSP exige isolamento cross-origin (COOP same-origin + COEP require-corp) para SharedArrayBuffer.",
+        "PSP exige SharedArrayBuffer/pthreads (COOP same-origin + COEP require-corp no web) " +
+          `(crossOriginIsolated=${globalThis.crossOriginIsolated}, SharedArrayBuffer=${typeof SharedArrayBuffer}, secure=${globalThis.isSecureContext}).`,
       );
     }
     const probe = document.createElement("canvas");

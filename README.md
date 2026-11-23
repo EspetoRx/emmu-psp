@@ -26,6 +26,13 @@ as funções exportadas pelo RetroArch (`simulate_input`, `cmd_save_state`,
 O Vite e o `tauri.conf.json` já enviam esses headers. Em hospedagem estática, o
 servidor precisa enviá-los; sem isso o core falha com mensagem explícita.
 
+No macOS, o WKWebView no esquema `tauri://` esconde o global `SharedArrayBuffer`
+e reporta `crossOriginIsolated === false`, mesmo com pthreads disponíveis. O
+adaptador contorna isso recuperando o construtor nativo a partir do buffer de uma
+`WebAssembly.Memory({ shared: true })`; o guard só falha se a memória
+compartilhada realmente não existir. No navegador (origem `http`/`https`), os
+headers COOP/COEP continuam obrigatórios para expor o `SharedArrayBuffer`.
+
 ## Frame e áudio
 
 - Frame RGBA8888 480×272 (`aspect-ratio: 480 / 272` na UI).
