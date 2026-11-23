@@ -246,10 +246,15 @@ function removeTree(FS, path) {
 }
 
 export class PspAdapter {
-  constructor(romBytes) {
+  constructor(romBytes, options = {}) {
     this.romBytes = romBytes instanceof Uint8Array
       ? romBytes
       : new Uint8Array(romBytes || []);
+    // O core sempre usa um canvas próprio e fresco (um canvas já usado por
+    // 2D não aceita webgl2). Quando a UI fornece o palco, esse canvas é
+    // acoplado sobre o canvas da UI, que fica oculto. O compositor apresenta
+    // direto o drawing buffer do PPSSPP: sem tearing e sem cópia por frame.
+    this.stage = options?.stage || null;
     this.module = null;
     this.functions = null;
     this.host = null;
@@ -351,22 +356,26 @@ export class PspAdapter {
     await loadRuntime();
 
     this.host = document.createElement("div");
-    this.host.setAttribute("aria-hidden", "true");
-    this.host.style.cssText =
-      "position:fixed;left:-10000px;top:0;width:480px;height:272px;opacity:0;pointer-events:none;";
+    if (this.stage) {
+      // Overlay acoplado ao palco. O layout fica em 480/dpr × 272/dpr para o
+      // ResizeObserver do PPSSPP reportar exatamente 480×272; o preenchimento
+      // visual é feito com transform: scale(), que não altera contentRect. O
+      // wrapper também impede que o Emscripten confunda o palco em fullscreen
+      // com o parente do canvas e redimensione o buffer para a tela inteira.
+      this.host.className = "psp-canvas-layer";
+      this.stage.classList.add("psp-active");
+      this.stage.appendChild(this.host);
+    } else {
+      // Fallback fora da UI: host oculto.
+      this.host.setAttribute("aria-hidden", "true");
+      this.host.style.cssText =
+        "position:fixed;left:-10000px;top:0;width:480px;height:272px;opacity:0;pointer-events:none;";
+      document.body.appendChild(this.host);
+    }
     this.canvas = document.createElement("canvas");
     this.canvas.width = FRAME_WIDTH;
     this.canvas.height = FRAME_HEIGHT;
-    // O core observa contentRect * devicePixelRatio e redimensiona o backing
-    // store. Fixar o CSS em 480/dpr × 272/dpr faz ele reportar exatamente
-    // 480×272: sem isso, num display DPR=2 o canvas vira 960×544 e a captura
-    // precisa reduzir de novo, degradando o texto. Sem CSS também entra em
-    // loop de dobra até estourar o limite do WebGL.
-    const dpr = window.devicePixelRatio || 1;
-    this.canvas.style.cssText =
-      `display:block;width:${FRAME_WIDTH / dpr}px;height:${FRAME_HEIGHT / dpr}px;`;
     this.host.appendChild(this.canvas);
-    document.body.appendChild(this.host);
 
     const nativeGetContext = this.canvas.getContext.bind(this.canvas);
     this.canvas.getContext = (type, attributes) => {
@@ -400,7 +409,7 @@ export class PspAdapter {
       noInitialRun: true,
       arguments: [],
       canvas: this.canvas,
-      parent: this.host,
+      parent: this.host || this.canvas.parentElement || document.body,
       print: (message) => {
         if (globalThis.__emmuPspVerboseLogs) console.log("[psp]", message);
       },
@@ -638,13 +647,15 @@ export class PspAdapter {
         });
       }
     }
-    // Entregar o canvas WebGL direto parecia mais barato, mas o PPSSPP usa um
-    // thread de GPU: drawImage capturava o frame no meio da renderização e o
-    // texto saía entrelaçado ("DERSPEED", "MeSEWANTELS"). O readPixels força
-    // uma cópia atômica do framebuffer; os buffers são reaproveitados.
-    const frame = renderGraphics
-      ? this.capturePixels()
-      : new Uint8ClampedArray(0);
+    // O PPSSPP desenha direto no canvas do overlay. O compositor do
+    // navegador apresenta o drawing buffer completo (swap chain), sem o tearing
+    // que o drawImage causava ao capturar o meio do desenho do thread de GPU.
+    // Também não há readPixels + flip + putImageData por frame: era isso que
+    // deixava a web lenta com áudio/vídeo travando.
+    //
+    // Frame vazio => drawFrame() da UI não mexe neste canvas (um canvas só
+    // aceita um tipo de contexto; getContext("2d") aqui retornaria null).
+    const frame = new Uint8ClampedArray(0);
     if (globalThis.__emmuPspVerboseLogs) {
       this.perfFrames = (this.perfFrames || 0) + 1;
       if (this.perfFrames % 60 === 0) {
@@ -889,6 +900,7 @@ export class PspAdapter {
       // abort lança string quando o runtime já foi finalizado
     }
     if (this.host?.parentNode) this.host.parentNode.removeChild(this.host);
+    this.stage?.classList.remove("psp-active");
     if (this.wasmUrl) URL.revokeObjectURL(this.wasmUrl);
     this.functions = null;
     this.module = null;
@@ -904,6 +916,6 @@ export class PspAdapter {
   }
 }
 
-export function createPspAdapter(romBytes) {
-  return new PspAdapter(romBytes);
+export function createPspAdapter(romBytes, options) {
+  return new PspAdapter(romBytes, options);
 }

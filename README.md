@@ -35,14 +35,18 @@ headers COOP/COEP continuam obrigatórios para expor o `SharedArrayBuffer`.
 
 ## Frame e áudio
 
-- Frame 480×272 (`aspect-ratio: 480 / 272` na UI). O adaptador faz `readPixels`
-  do drawingBuffer, inverte as linhas e devolve `Uint8ClampedArray` reaproveitado;
-  `drawFrame()` usa `putImageData`.
-- **Não** entregar o canvas WebGL direto: o PPSSPP tem thread de GPU própria e
-  `drawImage()` captura o frame no meio do desenho, produzindo texto entrelaçado
-  (ex.: "DERSPEED" em vez de "NEED FOR SPEED"). O `readPixels` sincroniza e
-  devolve uma cópia atômica.
-- A mesma captura alimenta `capturePreview()` (miniatura/save).
+- Frame 480×272. O adaptador cria um canvas próprio e o acopla como overlay
+  (`.psp-canvas-layer`) sobre o canvas da UI, que fica oculto. O compositor do
+  navegador apresenta o drawing buffer direto: sem `readPixels`/`drawImage` por
+  frame. `runFrame()` devolve um frame vazio e `drawFrame()` da UI o ignora.
+- **Não** fazer cópia por frame: `drawImage()` do canvas WebGL captura o meio do
+  desenho do thread de GPU (texto "DERSPEED"/"MeSEWANTELS") e `readPixels` +
+  flip + `putImageData` custa ~0,5 MB a 60 Hz, deixando a web lenta com áudio e
+  vídeo travando.
+- O overlay mantém o layout em `480/dpr × 272/dpr` e a UI aplica
+  `transform: scale()`; assim o `ResizeObserver` do core continua vendo 480×272.
+- `capturePixels()` (readPixels) ficou apenas em `capturePreview()`, usado na
+  miniatura e no save manual.
 - O core reporta 480×270 internamente; o adaptador entrega 480×272 para manter
   o tamanho nativo do LCD do PSP.
 - `ppsspp_cpu_core` é forçado para `IR JIT`: o padrão do runtime EmulatorJS é
