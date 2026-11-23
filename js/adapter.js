@@ -78,6 +78,34 @@ const PTHREAD_POOL_NEEDLE = "var pthreadPoolSize=32;";
 const THREADING_SUPPORT_NEEDLE =
   'var _emscripten_has_threading_support=()=>typeof SharedArrayBuffer!="undefined";';
 
+// O driver rwebaudio do runtime PPSSPP agenda cada buffer com pelo menos 10 ms
+// de antecedência. Quando o core atrasa um buffer, sobra um silêncio de até
+// ~30 ms na linha do tempo do WebAudio — ouvido como engasgo/chiado. O patch
+// abaixo preenche a falha com o trecho final do buffer anterior (com fade),
+// sem tocar no vendor. É aplicado em runtime porque o arquivo do PPSSPP é
+// pré-compilado e copiado pelo build:wasm. O piso de 20 ms dá folga para o
+// preenchimento mesmo quando o core entrega o buffer próximo do tempo atual.
+const RWA_QUEUE_NEEDLE =
+  "RWA.endTime=startTime+buffer.duration;bufferSource.start(startTime+RWA.extraLatencySec);return num_frames}";
+const RWA_QUEUE_PATCH =
+  "var minStart=RWA.context.currentTime+.02;if(startTime<minStart)startTime=minStart;" +
+  "RWA.endTime=startTime+buffer.duration;" +
+  "var actual=startTime+RWA.extraLatencySec;" +
+  "if(RWA.lastEnd&&RWA.lastBuffer&&actual-RWA.lastEnd>.004){" +
+  "var fillStart=Math.max(RWA.lastEnd,RWA.context.currentTime),fillLen=actual-fillStart;" +
+  "if(fillLen>.001){" +
+  "var fillFrames=Math.max(1,Math.round(fillLen*RWA.context.sampleRate))," +
+  "fillBuffer=RWA.context.createBuffer(2,fillFrames,RWA.context.sampleRate);" +
+  "for(var ch=0;ch<2;ch++){" +
+  "var previous=RWA.lastBuffer.getChannelData(ch),filled=fillBuffer.getChannelData(ch),length=previous.length;" +
+  "for(var i=0;i<fillFrames;i++)filled[i]=previous[(length-fillFrames+i+length)%length]*(1-i/fillFrames)}" +
+  "var filler=RWA.context.createBufferSource();filler.buffer=fillBuffer;" +
+  "filler.connect(RWA.context.destination);filler.start(fillStart)}}" +
+  "RWA.lastBuffer=buffer;RWA.lastEnd=actual+buffer.duration;" +
+  "bufferSource.start(actual);return num_frames}";
+const RWA_INIT_NEEDLE =
+  "RWA.extraLatencySec=_platform_emscripten_get_browser()==RWA.PLATFORM_EMSCRIPTEN_BROWSER_CHROMIUM?RWA.EXTRA_LATENCY_SEC_CHROME:RWA.EXTRA_LATENCY_SEC_NONCHROME;return 1}";
+
 let sharedMemoryCloneable = null;
 
 function canCloneSharedMemory() {
@@ -137,11 +165,38 @@ function ensureSharedArrayBuffer() {
   }
 }
 
+function patchRwaAudio(source) {
+  if (!source.includes(RWA_QUEUE_NEEDLE)) {
+    if (globalThis.__emmuPspVerboseLogs) {
+      console.warn("[emmu-psp] runtime sem driver rwebaudio; nada a corrigir no áudio");
+    }
+    return source;
+  }
+  let patched = source.replace(RWA_QUEUE_NEEDLE, RWA_QUEUE_PATCH);
+  if (!patched.includes(RWA_INIT_NEEDLE)) {
+    throw new Error("O runtime PPSSPP não expõe a inicialização do rwebaudio esperada.");
+  }
+  patched = patched.replace(
+    RWA_INIT_NEEDLE,
+    RWA_INIT_NEEDLE.replace(
+      "return 1}",
+      "RWA.lastEnd=0;RWA.lastBuffer=null;return 1}",
+    ),
+  );
+  return patched;
+}
+
 function loadRuntime() {
   if (typeof globalThis.EJS_Runtime === "function") return Promise.resolve();
   if (!runtimeLoadPromise) {
     runtimeLoadPromise = (async () => {
-      let scriptUrl = `${RUNTIME_BASE}ppsspp_libretro.js`;
+      const response = await fetch(`${RUNTIME_BASE}ppsspp_libretro.js`);
+      if (!response.ok) {
+        throw new Error(
+          `Não foi possível carregar o runtime PPSSPP (${response.status}).`,
+        );
+      }
+      let source = await response.text();
       if (!canCloneSharedMemory()) {
         if (globalThis.__emmuPspVerboseLogs) {
           console.warn(
@@ -150,15 +205,7 @@ function loadRuntime() {
         }
         // WebKit sem clone de SharedArrayBuffer: o Emscripten não consegue
         // inicializar os pthreads, então carregamos um runtime sem pool e sem
-        // suporte a threads. O blob permanece vivo porque o Emscripten guarda
-        // _scriptName e pode acessá-lo depois do onload.
-        const response = await fetch(scriptUrl);
-        if (!response.ok) {
-          throw new Error(
-            `Não foi possível carregar o runtime PPSSPP (${response.status}).`,
-          );
-        }
-        let source = await response.text();
+        // suporte a threads.
         if (!source.includes(PTHREAD_POOL_NEEDLE)) {
           throw new Error(
             "O runtime PPSSPP não expõe o pool de pthreads esperado.",
@@ -174,10 +221,13 @@ function loadRuntime() {
           THREADING_SUPPORT_NEEDLE,
           "var _emscripten_has_threading_support=()=>false;",
         );
-        scriptUrl = URL.createObjectURL(
-          new Blob([source], { type: "text/javascript" }),
-        );
       }
+      source = patchRwaAudio(source);
+      // O blob permanece vivo porque o Emscripten guarda _scriptName e pode
+      // acessá-lo depois do onload.
+      const scriptUrl = URL.createObjectURL(
+        new Blob([source], { type: "text/javascript" }),
+      );
       await new Promise((resolve, reject) => {
         const script = document.createElement("script");
         script.src = scriptUrl;

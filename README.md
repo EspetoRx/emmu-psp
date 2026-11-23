@@ -55,6 +55,22 @@ headers COOP/COEP continuam obrigatórios para expor o `SharedArrayBuffer`.
   devolve bloco vazio para o worklet do Emmu e controla o volume via
   `Module.AL.currentCtx.sources`.
 
+### Áudio: correção do driver rwebaudio
+
+O runtime PPSSPP 4.3.0-pre usa o driver `rwebaudio` (RWA), que agenda cada
+buffer WebAudio com apenas 10 ms de folga. Quando o core atrasa um buffer,
+sobra um silêncio de até ~30 ms na linha do tempo — percebido como engasgo e
+chiado constante, inclusive com 60 fps de vídeo. Como o runtime é pré-compilado,
+o adaptador aplica o patch em memória em `patchRwaAudio()`:
+
+- estabelece um piso de 20 ms para o início de cada buffer, dando tempo de
+  agendar o preenchimento mesmo quando o core chega perto do tempo atual;
+- preenche a falha com o trecho final do buffer anterior, com fade, em vez de
+  deixar silêncio.
+
+Nada em `vendor/` é editado. O patch valida as needles do runtime e falha
+explicitamente se o formato mudar, em vez de aplicar uma substituição silenciosa.
+
 ### Dimensionamento do canvas (obrigatório)
 
 O runtime PPSSPP observa `contentRect * devicePixelRatio` do canvas e
