@@ -104,18 +104,33 @@ O estado bruto do PPSSPP tem ~40 MiB e comprime bem; a save data do cartão de
 memória é guardada dentro do mesmo envelope porque o `.ppst` não a inclui. O
 load rejeita magic/versão desconhecidos e comprimentos inconsistentes.
 
-### Autosave sem travar a emulação
+### Autosave desabilitado
 
-O core roda obrigatoriamente na main thread (WebGL2 + pthreads), mas o
-pós-processamento do save roda em `js/save.worker.js`: gzip do estado, ZIP da
-save data e codificação PNG do preview. O adaptador copia o estado bruto da
-HEAPU8, envia ao worker e monta o envelope com o resultado; se o worker não
-carregar, há fallback síncrono com nível de compressão `1`.
+O core roda obrigatoriamente na main thread (WebGL2 + pthreads). Mesmo com o
+pós-processamento no `js/save.worker.js` (gzip do estado, ZIP da save data e PNG
+do preview), a chamada `cmd_save_state()` do RetroArch bloqueia essa thread por
+segundos — é o "backdrop pesado" que travava áudio e vídeo a cada 5 s. Por isso
+o autosave do PSP foi **desabilitado**:
 
-O autosave de 5 s não tira mais preview do canvas WebGL — a miniatura existente
-é reaproveitada. O save manual continua capturando um novo preview. Com
-`globalThis.__emmuPspVerboseLogs = true`, o log `[emmu-psp] save` mostra
-`coreMs`, tamanhos e se o worker foi usado.
+- `useEmulator.js::saveCurrentProgress()` retorna cedo quando
+  `!recordHistory && game.format === "PSP"` (checkpoint periódico, troca de
+  aba e fechamento);
+- `RETROARCH_CFG` usa `autosave_interval = 0`.
+
+O save manual (`Salvar estado`) continua funcionando e capturando um preview
+novo. A UI mostra "Autosave desabilitado para este game" na barra de status,
+com um balão explicando o motivo. Com `globalThis.__emmuPspVerboseLogs = true`,
+o log `[emmu-psp] save` mostra `coreMs`, tamanhos e se o worker foi usado.
+
+### Fontes PGF
+
+As fontes do sistema PSP (`flash0/font/ltn*.pgf`) vêm em `ppsspp-assets.zip` e
+são instaladas em `/PPSSPP/flash0/font`. O core libretro resolve `flash0:` como
+`<system_directory>/PPSSPP/flash0`, então o `RETROARCH_CFG` fixa
+`system_directory = "/"` e o adaptador cria symlinks das raízes alternativas
+(`/home/web_user/PPSSPP`, `/data/PPSSPP`, `/data/saves/PPSSPP`) apontando para
+`/PPSSPP`. Sem isso, qualquer mensagem de qualquer jogo aparece como quadrados
+preenchidos e linhas irreconhecíveis.
 
 ## Build
 

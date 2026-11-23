@@ -20,17 +20,20 @@ const RUNTIME_BASE = (
 
 // Configuração validada na POC com ULUS-10036. Não adicionar opções de
 // vsync/fast-forward: elas mudam o caminho de save state do RetroArch.
-const RETROARCH_CFG = `autosave_interval = 60
+const RETROARCH_CFG = `autosave_interval = 0
 screenshot_directory = "/"
 block_sram_overwrite = false
 video_gpu_screenshot = false
-audio_latency = 64
+audio_latency = 128
 audio_out_rate = 44100
 video_top_portrait_viewport = true
 video_vsync = true
 video_smooth = false
 fastforward_ratio = 3.0
 slowmotion_ratio = 3.0
+# O core resolve flash0: como <system_directory>/PPSSPP/flash0. Travar a raiz
+# garante que as fontes PGF instaladas em /PPSSPP/flash0/font sejam encontradas.
+system_directory = "/"
 savefile_directory = "/data/saves"
 savestate_directory = "/data/saves"
 `;
@@ -427,13 +430,17 @@ export class PspAdapter {
     // alvo. O padrão do runtime EmulatorJS é "Interpreter", bem mais lento em
     // jogos 3D como Need for Speed.
     try {
-      this.module.cwrap("ejs_set_variable", "null", ["string", "string"])(
-        "ppsspp_cpu_core",
-        "IR JIT",
-      );
+      const setVariable = this.module.cwrap("ejs_set_variable", "null", [
+        "string",
+        "string",
+      ]);
+      setVariable("ppsspp_cpu_core", "IR JIT");
+      // A ISO já vive no MEMFS. Manter bCacheFullIsoInRam faria o core copiar
+      // mais ~0,9 GB (NFS) para outro buffer, pressionando GC/heap na web.
+      setVariable("ppsspp_cache_iso", "disabled");
     } catch (error) {
       if (globalThis.__emmuPspVerboseLogs) {
-        console.warn("[emmu-psp] falha ao definir ppsspp_cpu_core", error);
+        console.warn("[emmu-psp] falha ao definir opções do core", error);
       }
     }
 
@@ -546,6 +553,31 @@ export class PspAdapter {
         }
       }
       FS.writeFile(path, data, { canOwn: true });
+    }
+
+    // O libretro resolve a pasta base como <system_directory>/PPSSPP. O
+    // retroarch.cfg acima força "/", mas alguns frontends Emscripten reportam
+    // outro diretório. Links simbólicos baratos cobrem as alternativas sem
+    // duplicar os ~6 MB das fontes no heap do MEMFS.
+    for (const path of [
+      "/home/web_user/PPSSPP",
+      "/data/PPSSPP",
+      "/data/saves/PPSSPP",
+    ]) {
+      if (FS.analyzePath(path).exists) continue;
+      try {
+        FS.symlink("/PPSSPP", path);
+      } catch {
+        // diretório pai ausente (frontend não criou) — caminho não usado
+      }
+    }
+    // Caminho alternativo que o core tenta para fontes: ms0:/PSP/flash0/font/.
+    try {
+      if (!FS.analyzePath("/data/saves/PPSSPP/PSP/flash0").exists) {
+        FS.symlink("/PPSSPP/flash0", "/data/saves/PPSSPP/PSP/flash0");
+      }
+    } catch {
+      // MEMFS sem suporte a symlink neste ponto
     }
   }
 
