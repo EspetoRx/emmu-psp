@@ -626,9 +626,7 @@ export class PspAdapter {
     if (this.disposed || !this.module) {
       throw new Error("O emulador PSP já foi encerrado.");
     }
-    // O canvas WebGL do core é entregue direto para o compositor da UI. Isso
-    // evita gl.readPixels + flip + ImageData a 60 Hz na main thread; o capture
-    // de pixels continua existindo apenas para a miniatura (toDataURL).
+    const startedAt = performance.now();
     if (globalThis.__emmuPspVerboseLogs && this.gl && renderGraphics) {
       const width = this.gl.drawingBufferWidth;
       const height = this.gl.drawingBufferHeight;
@@ -640,7 +638,13 @@ export class PspAdapter {
         });
       }
     }
-    const frame = renderGraphics ? this.canvas : new Uint8ClampedArray(0);
+    // Entregar o canvas WebGL direto parecia mais barato, mas o PPSSPP usa um
+    // thread de GPU: drawImage capturava o frame no meio da renderização e o
+    // texto saía entrelaçado ("DERSPEED", "MeSEWANTELS"). O readPixels força
+    // uma cópia atômica do framebuffer; os buffers são reaproveitados.
+    const frame = renderGraphics
+      ? this.capturePixels()
+      : new Uint8ClampedArray(0);
     if (globalThis.__emmuPspVerboseLogs) {
       this.perfFrames = (this.perfFrames || 0) + 1;
       if (this.perfFrames % 60 === 0) {
@@ -661,7 +665,7 @@ export class PspAdapter {
       audioSamples: new Float32Array(0),
       audioSampleRate: AUDIO_SAMPLE_RATE,
       audioChannels: 2,
-      processingTimeMs: 0,
+      processingTimeMs: performance.now() - startedAt,
     };
   }
 
