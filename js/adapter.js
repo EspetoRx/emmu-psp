@@ -448,6 +448,18 @@ export class PspAdapter {
     await this.installAssets();
 
     const FS = this.module.FS;
+    if (globalThis.__emmuPspVerboseLogs) {
+      console.log(
+        "[emmu-psp] font paths",
+        [
+          "/PPSSPP/flash0/font/ltn0.pgf",
+          "/home/web_user/PPSSPP/flash0/font/ltn0.pgf",
+          "/data/PPSSPP/flash0/font/ltn0.pgf",
+          "/data/saves/PPSSPP/flash0/font/ltn0.pgf",
+          "/data/saves/PPSSPP/PSP/flash0/font/ltn0.pgf",
+        ].map((path) => [path, FS.analyzePath(path).exists]),
+      );
+    }
     FS.writeFile("/game.iso", new Uint8Array(this.romBytes), { canOwn: true });
     this.module.callMain(["/game.iso"]);
     this.module.resumeMainLoop?.();
