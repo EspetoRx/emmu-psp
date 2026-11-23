@@ -353,6 +353,20 @@ export class PspAdapter {
       getSavExt: () => ".srm",
     });
 
+    // WebAssembly não tem JIT nativo: "IR JIT" é o modo rápido do PPSSPP neste
+    // alvo. O padrão do runtime EmulatorJS é "Interpreter", bem mais lento em
+    // jogos 3D como Need for Speed.
+    try {
+      this.module.cwrap("ejs_set_variable", "null", ["string", "string"])(
+        "ppsspp_cpu_core",
+        "IR JIT",
+      );
+    } catch (error) {
+      if (globalThis.__emmuPspVerboseLogs) {
+        console.warn("[emmu-psp] falha ao definir ppsspp_cpu_core", error);
+      }
+    }
+
     this.prepareFileSystem();
     await this.installAssets();
 
@@ -377,6 +391,15 @@ export class PspAdapter {
       toggleMainLoop: this.module.cwrap("toggleMainLoop", "null", ["number"]),
       frameCount: this.module.cwrap("get_current_frame_count", "number", []),
     };
+    if (globalThis.__emmuPspVerboseLogs) {
+      const options = this.module.cwrap("get_core_options", "string", [])();
+      console.log(
+        "[emmu-psp] cpu core option",
+        options
+          .split("\n")
+          .find((line) => line.startsWith("ppsspp_cpu_core")) ?? "(ausente)",
+      );
+    }
 
     // resumeMainLoop() já foi chamado após callMain; o toggle garante que o
     // loop do RetroArch esteja ativo mesmo se o core tiver pausado no boot.
@@ -542,8 +565,22 @@ export class PspAdapter {
     if (this.disposed || !this.module) {
       throw new Error("O emulador PSP já foi encerrado.");
     }
-    const startedAt = performance.now();
-    const frame = renderGraphics ? this.capturePixels() : new Uint8ClampedArray(0);
+    // O canvas WebGL do core é entregue direto para o compositor da UI. Isso
+    // evita gl.readPixels + flip + ImageData a 60 Hz na main thread; o capture
+    // de pixels continua existindo apenas para a miniatura (toDataURL).
+    const frame = renderGraphics ? this.canvas : new Uint8ClampedArray(0);
+    if (globalThis.__emmuPspVerboseLogs) {
+      this.perfFrames = (this.perfFrames || 0) + 1;
+      if (this.perfFrames % 60 === 0) {
+        const now = performance.now();
+        console.log("[emmu-psp] perf", {
+          uiFrames: this.perfFrames,
+          wallMs: Math.round(now - (this.perfSince ?? now)),
+          coreFrames: this.functions?.frameCount?.() ?? -1,
+        });
+        this.perfSince = now;
+      }
+    }
     return {
       frame,
       width: FRAME_WIDTH,
@@ -552,7 +589,7 @@ export class PspAdapter {
       audioSamples: new Float32Array(0),
       audioSampleRate: AUDIO_SAMPLE_RATE,
       audioChannels: 2,
-      processingTimeMs: performance.now() - startedAt,
+      processingTimeMs: 0,
     };
   }
 

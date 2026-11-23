@@ -35,9 +35,14 @@ headers COOP/COEP continuam obrigatórios para expor o `SharedArrayBuffer`.
 
 ## Frame e áudio
 
-- Frame RGBA8888 480×272 (`aspect-ratio: 480 / 272` na UI).
-- O core reporta 480×270 internamente; o adaptador devolve 480×272 para manter
+- Frame 480×272 (`aspect-ratio: 480 / 272` na UI). O adaptador devolve o próprio
+  canvas WebGL do core; `drawFrame()` da UI faz `drawImage` direto, sem
+  `readPixels`/`ImageData` a 60 Hz.
+- O `readPixels` ficou apenas em `capturePreview()` (miniatura/save).
+- O core reporta 480×270 internamente; o adaptador entrega 480×272 para manter
   o tamanho nativo do LCD do PSP.
+- `ppsspp_cpu_core` é forçado para `IR JIT`: o padrão do runtime EmulatorJS é
+  `Interpreter`, bem mais lento em WebAssembly.
 - Áudio é reproduzido pelo OpenAL/WebAudio do próprio Emscripten. O adaptador
   devolve bloco vazio para o worklet do Emmu e controla o volume via
   `Module.AL.currentCtx.sources`.
