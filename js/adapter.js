@@ -449,6 +449,21 @@ export class PspAdapter {
 
     const FS = this.module.FS;
     if (globalThis.__emmuPspVerboseLogs) {
+      // Instrumenta as aberturas de arquivo do core para descobrir exatamente
+      // quais caminhos ele tenta usar para as fontes PGF. Só existe quando o
+      // log verbose está ligado; não afeta a partida normal.
+      for (const name of ["open", "openStream"]) {
+        const original = FS[name];
+        if (typeof original !== "function") continue;
+        FS[name] = function (...args) {
+          const path = String(args[0] ?? "");
+          if (/font|\.pgf|flash0/i.test(path)) {
+            const exists = FS.analyzePath(path).exists;
+            console.log("[emmu-psp] FS." + name, path, "exists:", exists);
+          }
+          return original.apply(this, args);
+        };
+      }
       console.log(
         "[emmu-psp] font paths",
         [

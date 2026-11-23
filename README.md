@@ -118,7 +118,7 @@ o autosave do PSP foi **desabilitado**:
 - `RETROARCH_CFG` usa `autosave_interval = 0`.
 
 O save manual (`Salvar estado`) continua funcionando e capturando um preview
-novo. A UI mostra "Autosave desabilitado para este game" na barra de status,
+novo. A UI mostra "Autosave Desabilitado para esse game" na barra de status,
 com um balão explicando o motivo. Com `globalThis.__emmuPspVerboseLogs = true`,
 o log `[emmu-psp] save` mostra `coreMs`, tamanhos e se o worker foi usado.
 
