@@ -57,19 +57,24 @@ headers COOP/COEP continuam obrigatórios para expor o `SharedArrayBuffer`.
 
 ### Áudio: correção do driver rwebaudio
 
-O runtime PPSSPP 4.3.0-pre usa o driver `rwebaudio` (RWA), que agenda cada
-buffer WebAudio com apenas 10 ms de folga. Quando o core atrasa um buffer,
-sobra um silêncio de até ~30 ms na linha do tempo — percebido como engasgo e
-chiado constante, inclusive com 60 fps de vídeo. Como o runtime é pré-compilado,
-o adaptador aplica o patch em memória em `patchRwaAudio()`:
+O runtime PPSSPP usa o driver `rwebaudio` (RWA), que agenda cada bloco com só
+10 ms de folga. O core entrega áudio em rajadas de ~10 ms; quando a fila
+esvazia, resta um silêncio de 5–30 ms na linha do tempo do WebAudio — ouvido
+como estalo periódico mesmo com vídeo em 60 fps.
 
-- estabelece um piso de 20 ms para o início de cada buffer, dando tempo de
-  agendar o preenchimento mesmo quando o core chega perto do tempo atual;
-- preenche a falha com o trecho final do buffer anterior, com fade, em vez de
-  deixar silêncio.
+O runtime é pré-compilado, então o adaptador aplica o patch em memória em
+`patchRwaAudio()`:
 
-Nada em `vendor/` é editado. O patch valida as needles do runtime e falha
-explicitamente se o formato mudar, em vez de aplicar uma substituição silenciosa.
+- `audio_latency = 512` dá espaço para um jitter buffer;
+- `RWA.endTime` começa 300 ms à frente e cada bloco é agendado de forma
+  contígua;
+- uma correção de velocidade de ±4% (`playbackRate`) mantém a folga sem
+  fabricar áudio — não há repetição do bloco anterior, que soava como chiado;
+- o `AudioContext` do driver é criado a 44100 Hz, taxa declarada pelo core
+  (`audio_out_rate = 44100`), sem alterar o construtor global da aplicação.
+
+As needles são validadas e o patch falha explicitamente se o formato do runtime
+mudar. Nada em `vendor/` é editado.
 
 ### Dimensionamento do canvas (obrigatório)
 

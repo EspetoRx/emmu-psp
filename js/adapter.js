@@ -24,7 +24,7 @@ const RETROARCH_CFG = `autosave_interval = 0
 screenshot_directory = "/"
 block_sram_overwrite = false
 video_gpu_screenshot = false
-audio_latency = 128
+audio_latency = 512
 audio_out_rate = 44100
 video_top_portrait_viewport = true
 video_vsync = true
@@ -78,33 +78,33 @@ const PTHREAD_POOL_NEEDLE = "var pthreadPoolSize=32;";
 const THREADING_SUPPORT_NEEDLE =
   'var _emscripten_has_threading_support=()=>typeof SharedArrayBuffer!="undefined";';
 
-// O driver rwebaudio do runtime PPSSPP agenda cada buffer com pelo menos 10 ms
-// de antecedência. Quando o core atrasa um buffer, sobra um silêncio de até
-// ~30 ms na linha do tempo do WebAudio — ouvido como engasgo/chiado. O patch
-// abaixo preenche a falha com o trecho final do buffer anterior (com fade),
-// sem tocar no vendor. É aplicado em runtime porque o arquivo do PPSSPP é
-// pré-compilado e copiado pelo build:wasm. O piso de 20 ms dá folga para o
-// preenchimento mesmo quando o core entrega o buffer próximo do tempo atual.
+// O driver rwebaudio do runtime PPSSPP agenda cada lote com só 10 ms de folga
+// e deixa a fila esvaziar entre os lotes do core (o PPSSPP entrega áudio em
+// rajadas). Quando a fila chega a zero, sobra um silêncio de 5–30 ms na linha
+// do tempo — ouvido como estalo periódico mesmo com vídeo em 60 fps.
+//
+// A correção é um jitter buffer: `audio_latency = 512` dá espaço na fila, o
+// patch inicializa `RWA.endTime` 300 ms à frente e cada novo buffer é agendado
+// de forma contígua. Uma correção de velocidade de ±4% mantém essa folga sem
+// fabricar áudio (não há repetição do buffer anterior, que soava como chiado).
+// Tudo é aplicado em memória: o runtime pré-compilado em vendor/ não é tocado.
 const RWA_QUEUE_NEEDLE =
   "RWA.endTime=startTime+buffer.duration;bufferSource.start(startTime+RWA.extraLatencySec);return num_frames}";
 const RWA_QUEUE_PATCH =
-  "var minStart=RWA.context.currentTime+.02;if(startTime<minStart)startTime=minStart;" +
-  "RWA.endTime=startTime+buffer.duration;" +
-  "var actual=startTime+RWA.extraLatencySec;" +
-  "if(RWA.lastEnd&&RWA.lastBuffer&&actual-RWA.lastEnd>.004){" +
-  "var fillStart=Math.max(RWA.lastEnd,RWA.context.currentTime),fillLen=actual-fillStart;" +
-  "if(fillLen>.001){" +
-  "var fillFrames=Math.max(1,Math.round(fillLen*RWA.context.sampleRate))," +
-  "fillBuffer=RWA.context.createBuffer(2,fillFrames,RWA.context.sampleRate);" +
-  "for(var ch=0;ch<2;ch++){" +
-  "var previous=RWA.lastBuffer.getChannelData(ch),filled=fillBuffer.getChannelData(ch),length=previous.length;" +
-  "for(var i=0;i<fillFrames;i++)filled[i]=previous[(length-fillFrames+i+length)%length]*(1-i/fillFrames)}" +
-  "var filler=RWA.context.createBufferSource();filler.buffer=fillBuffer;" +
-  "filler.connect(RWA.context.destination);filler.start(fillStart)}}" +
-  "RWA.lastBuffer=buffer;RWA.lastEnd=actual+buffer.duration;" +
-  "bufferSource.start(actual);return num_frames}";
-const RWA_INIT_NEEDLE =
-  "RWA.extraLatencySec=_platform_emscripten_get_browser()==RWA.PLATFORM_EMSCRIPTEN_BROWSER_CHROMIUM?RWA.EXTRA_LATENCY_SEC_CHROME:RWA.EXTRA_LATENCY_SEC_NONCHROME;return 1}";
+  "var now=RWebAudioGetCurrentTime(),lead=RWA.endTime-now;" +
+  "var rate=lead>.35?1:(lead>.31?1.01:.96);" +
+  "var begin=RWA.endTime>now?RWA.endTime:now;" +
+  "RWA.endTime=begin+buffer.duration/rate;" +
+  "bufferSource.playbackRate.value=rate;" +
+  "bufferSource.start(begin+RWA.extraLatencySec);return num_frames}";
+const RWA_INIT_NEEDLE = "RWA.endTime=0;RWA.latency=latency;";
+const RWA_INIT_PATCH =
+  "RWA.endTime=RWebAudioGetCurrentTime()+.30;RWA.latency=latency;";
+// O core entrega áudio a 44100 Hz (audio_out_rate); um AudioContext a 48000
+// tocaria esses blocos 8,8% mais rápido. Forçar a taxa no próprio driver evita
+// mexer no construtor global usado pelo resto da aplicação.
+const RWA_CONTEXT_NEEDLE = "RWA.context=new ac;";
+const RWA_CONTEXT_PATCH = "RWA.context=new ac({sampleRate:44100});";
 
 let sharedMemoryCloneable = null;
 
@@ -166,24 +166,20 @@ function ensureSharedArrayBuffer() {
 }
 
 function patchRwaAudio(source) {
-  if (!source.includes(RWA_QUEUE_NEEDLE)) {
+  if (
+    !source.includes(RWA_QUEUE_NEEDLE) ||
+    !source.includes(RWA_INIT_NEEDLE) ||
+    !source.includes(RWA_CONTEXT_NEEDLE)
+  ) {
     if (globalThis.__emmuPspVerboseLogs) {
       console.warn("[emmu-psp] runtime sem driver rwebaudio; nada a corrigir no áudio");
     }
     return source;
   }
-  let patched = source.replace(RWA_QUEUE_NEEDLE, RWA_QUEUE_PATCH);
-  if (!patched.includes(RWA_INIT_NEEDLE)) {
-    throw new Error("O runtime PPSSPP não expõe a inicialização do rwebaudio esperada.");
-  }
-  patched = patched.replace(
-    RWA_INIT_NEEDLE,
-    RWA_INIT_NEEDLE.replace(
-      "return 1}",
-      "RWA.lastEnd=0;RWA.lastBuffer=null;return 1}",
-    ),
-  );
-  return patched;
+  return source
+    .replace(RWA_QUEUE_NEEDLE, RWA_QUEUE_PATCH)
+    .replace(RWA_INIT_NEEDLE, RWA_INIT_PATCH)
+    .replace(RWA_CONTEXT_NEEDLE, RWA_CONTEXT_PATCH);
 }
 
 function loadRuntime() {
