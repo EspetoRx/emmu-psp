@@ -42,6 +42,22 @@ headers COOP/COEP continuam obrigatórios para expor o `SharedArrayBuffer`.
   devolve bloco vazio para o worklet do Emmu e controla o volume via
   `Module.AL.currentCtx.sources`.
 
+### Dimensionamento do canvas (obrigatório)
+
+O runtime PPSSPP observa `contentRect * devicePixelRatio` do canvas e
+redimensiona o próprio backing store. O adaptador fixa o CSS do canvas interno
+em `480 / dpr × 272 / dpr` para que o core reporte exatamente 480×272.
+
+- Sem CSS, num display DPR=2 o canvas dobra de tamanho a cada callback de
+  `ResizeObserver` até virar 62 mil × 35 mil; o `readPixels` passa a ler um
+  buffer gigante e preto e o console enche de `ResizeObserver loop completed
+  with undelivered notifications`.
+- Com CSS em `100%` do host, o core renderiza 960×544 e a redução para 480×272
+  degrada o texto (dupla reamostragem).
+- A captura reaproveita os buffers raw e invertido entre frames. Alocar ~0,5 MB
+  por frame (raw + `ImageData`) provoca GC constante e solavancos mesmo com
+  `frameCount` subindo normalmente.
+
 ## Controles
 
 | Ação Emmu | Botão RetroArch/PPSSPP |

@@ -23,8 +23,14 @@ const RUNTIME_BASE = (
 const RETROARCH_CFG = `autosave_interval = 60
 screenshot_directory = "/"
 block_sram_overwrite = false
-video_smooth = false
+video_gpu_screenshot = false
 audio_latency = 64
+audio_out_rate = 44100
+video_top_portrait_viewport = true
+video_vsync = true
+video_smooth = false
+fastforward_ratio = 3.0
+slowmotion_ratio = 3.0
 savefile_directory = "/data/saves"
 savestate_directory = "/data/saves"
 `;
@@ -59,6 +65,50 @@ const ANALOG_BUTTONS = new Set([
 
 let runtimeLoadPromise = null;
 
+// WebKit/Safari 26.2+ não consegue clonar WebAssembly.Memory compartilhada via
+// postMessage (DataCloneError), o que quebra o pool de pthreads do Emscripten.
+// Nesses ambientes o runtime é carregado com o pool zerado: o core roda na main
+// thread, sem paralelismo, mas inicializa e joga. O teste é síncrono — o mesmo
+// DataCloneError é lançado por worker.postMessage dentro do executor da Promise
+// do Emscripten e aparece como "Unhandled Promise Rejection" no console.
+const PTHREAD_POOL_NEEDLE = "var pthreadPoolSize=32;";
+const THREADING_SUPPORT_NEEDLE =
+  'var _emscripten_has_threading_support=()=>typeof SharedArrayBuffer!="undefined";';
+
+function canCloneSharedMemory() {
+  try {
+    const memory = new WebAssembly.Memory({
+      initial: 1,
+      maximum: 1,
+      shared: true,
+    });
+    const module = new WebAssembly.Module(
+      new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]),
+    );
+    const worker = new Worker(
+      URL.createObjectURL(
+        new Blob(["self.onmessage=function(){}"], { type: "text/javascript" }),
+      ),
+    );
+    try {
+      worker.postMessage({ wasmMemory: memory });
+    } catch {
+      worker.terminate();
+      return false;
+    }
+    try {
+      worker.postMessage({ wasmModule: module });
+    } catch {
+      worker.terminate();
+      return false;
+    }
+    worker.terminate();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // WKWebView no macOS (esquema tauri://) esconde o global SharedArrayBuffer e
 // reporta crossOriginIsolated=false, mesmo com pthreads disponíveis. O construtor
 // nativo continua acessível pelo buffer de uma WebAssembly.Memory compartilhada;
@@ -81,17 +131,51 @@ function ensureSharedArrayBuffer() {
 function loadRuntime() {
   if (typeof globalThis.EJS_Runtime === "function") return Promise.resolve();
   if (!runtimeLoadPromise) {
-    runtimeLoadPromise = new Promise((resolve, reject) => {
-      const script = document.createElement("script");
-      script.src = `${RUNTIME_BASE}ppsspp_libretro.js`;
-      script.onload = () => {
-        if (typeof globalThis.EJS_Runtime === "function") resolve();
-        else reject(new Error("O runtime PPSSPP não expôs EJS_Runtime."));
-      };
-      script.onerror = () =>
-        reject(new Error("Não foi possível carregar o runtime PPSSPP."));
-      document.head.appendChild(script);
-    }).catch((error) => {
+    runtimeLoadPromise = (async () => {
+      let scriptUrl = `${RUNTIME_BASE}ppsspp_libretro.js`;
+      if (!canCloneSharedMemory()) {
+        // WebKit sem clone de SharedArrayBuffer: o Emscripten não consegue
+        // inicializar os pthreads, então carregamos um runtime sem pool e sem
+        // suporte a threads. O blob permanece vivo porque o Emscripten guarda
+        // _scriptName e pode acessá-lo depois do onload.
+        const response = await fetch(scriptUrl);
+        if (!response.ok) {
+          throw new Error(
+            `Não foi possível carregar o runtime PPSSPP (${response.status}).`,
+          );
+        }
+        let source = await response.text();
+        if (!source.includes(PTHREAD_POOL_NEEDLE)) {
+          throw new Error(
+            "O runtime PPSSPP não expõe o pool de pthreads esperado.",
+          );
+        }
+        source = source.replace(PTHREAD_POOL_NEEDLE, "var pthreadPoolSize=0;");
+        if (!source.includes(THREADING_SUPPORT_NEEDLE)) {
+          throw new Error(
+            "O runtime PPSSPP não expõe a verificação de threading esperada.",
+          );
+        }
+        source = source.replace(
+          THREADING_SUPPORT_NEEDLE,
+          "var _emscripten_has_threading_support=()=>false;",
+        );
+        scriptUrl = URL.createObjectURL(
+          new Blob([source], { type: "text/javascript" }),
+        );
+      }
+      await new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = scriptUrl;
+        script.onload = () => resolve();
+        script.onerror = () =>
+          reject(new Error("Não foi possível carregar o runtime PPSSPP."));
+        document.head.appendChild(script);
+      });
+      if (typeof globalThis.EJS_Runtime !== "function") {
+        throw new Error("O runtime PPSSPP não expôs EJS_Runtime.");
+      }
+    })().catch((error) => {
       runtimeLoadPromise = null;
       throw error;
     });
@@ -191,17 +275,28 @@ export class PspAdapter {
     this.canvas = document.createElement("canvas");
     this.canvas.width = FRAME_WIDTH;
     this.canvas.height = FRAME_HEIGHT;
+    // O core observa contentRect * devicePixelRatio e redimensiona o backing
+    // store. Fixar o CSS em 480/dpr × 272/dpr faz ele reportar exatamente
+    // 480×272: sem isso, num display DPR=2 o canvas vira 960×544 e a captura
+    // precisa reduzir de novo, degradando o texto. Sem CSS também entra em
+    // loop de dobra até estourar o limite do WebGL.
+    const dpr = window.devicePixelRatio || 1;
+    this.canvas.style.cssText =
+      `display:block;width:${FRAME_WIDTH / dpr}px;height:${FRAME_HEIGHT / dpr}px;`;
     this.host.appendChild(this.canvas);
     document.body.appendChild(this.host);
 
     const nativeGetContext = this.canvas.getContext.bind(this.canvas);
-    this.canvas.getContext = (type, attributes) =>
-      nativeGetContext(
+    this.canvas.getContext = (type, attributes) => {
+      const context = nativeGetContext(
         type,
         String(type).includes("webgl")
           ? { ...(attributes || {}), preserveDrawingBuffer: true }
           : attributes,
       );
+      if (String(type).includes("webgl") && context) this.gl = context;
+      return context;
+    };
 
     this.captureCanvas = document.createElement("canvas");
     this.captureCanvas.width = FRAME_WIDTH;
@@ -209,6 +304,11 @@ export class PspAdapter {
     this.captureContext = this.captureCanvas.getContext("2d", {
       willReadFrequently: true,
     });
+    this.captureContext.imageSmoothingEnabled = false;
+    this.rawBuffer = null;
+    this.flippedPixels = null;
+    this.rawCanvas = null;
+    this.rawContext = null;
 
     const wasmBytes = await this.fetchBytes(`${RUNTIME_BASE}ppsspp_libretro.wasm`);
     this.wasmUrl = URL.createObjectURL(
@@ -219,7 +319,9 @@ export class PspAdapter {
       arguments: [],
       canvas: this.canvas,
       parent: this.host,
-      print: () => {},
+      print: (message) => {
+        if (globalThis.__emmuPspVerboseLogs) console.log("[psp]", message);
+      },
       printErr: (message) => {
         if (globalThis.__emmuPspVerboseLogs) console.warn("[psp]", message);
       },
@@ -250,11 +352,22 @@ export class PspAdapter {
       restart: this.module.cwrap("system_restart", "null", []),
       toggleMainLoop: this.module.cwrap("toggleMainLoop", "null", ["number"]),
       frameCount: this.module.cwrap("get_current_frame_count", "number", []),
-      dimensions: this.module.cwrap("get_video_dimensions", "number", [
-        "string",
-      ]),
     };
 
+    // resumeMainLoop() já foi chamado após callMain; o toggle garante que o
+    // loop do RetroArch esteja ativo mesmo se o core tiver pausado no boot.
+    try {
+      this.functions.toggleMainLoop(1);
+    } catch {
+      // loop já ativo
+    }
+    for (const ctx of Object.values(this.module.AL?.contexts || {})) {
+      try {
+        await (ctx.audioCtx || ctx.gain?.context)?.resume();
+      } catch {
+        // áudio ainda não inicializado nesta fase
+      }
+    }
     await this.waitForFirstFrame();
     return this;
   }
@@ -333,12 +446,72 @@ export class PspAdapter {
   }
 
   capturePixels() {
-    if (!this.captureContext || !this.canvas) {
-      return new Uint8ClampedArray(0);
+    const gl = this.gl;
+    if (!gl || !this.captureContext) return new Uint8ClampedArray(0);
+    const width = gl.drawingBufferWidth;
+    const height = gl.drawingBufferHeight;
+    if (!width || !height) return new Uint8ClampedArray(0);
+
+    // Buffers reaproveitados: alocar ~0,5 MB por frame (raw + ImageData) gerava
+    // GC constante e deixava o jogo com solavancos mesmo com 60 fps estáveis.
+    const length = width * height * 4;
+    if (!this.rawBuffer || this.rawBuffer.length !== length) {
+      this.rawBuffer = new Uint8Array(length);
+      this.flippedPixels = new Uint8ClampedArray(length);
+      this.rawCanvas = null;
     }
-    this.captureContext.drawImage(this.canvas, 0, 0, FRAME_WIDTH, FRAME_HEIGHT);
-    return this.captureContext.getImageData(0, 0, FRAME_WIDTH, FRAME_HEIGHT)
-      .data;
+    const previousFramebuffer = gl.getParameter(gl.FRAMEBUFFER_BINDING);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.readPixels(
+      0,
+      0,
+      width,
+      height,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      this.rawBuffer,
+    );
+    gl.bindFramebuffer(gl.FRAMEBUFFER, previousFramebuffer);
+
+    const rowBytes = width * 4;
+    const flipped = this.flippedPixels;
+    for (let y = 0; y < height; y += 1) {
+      flipped.set(
+        this.rawBuffer.subarray(
+          (height - 1 - y) * rowBytes,
+          (height - y) * rowBytes,
+        ),
+        y * rowBytes,
+      );
+    }
+
+    // Com o CSS travado em 480/dpr × 272/dpr o drawingBuffer já é nativo:
+    // devolver o buffer invertido evita drawImage + getImageData por frame.
+    if (width === FRAME_WIDTH && height === FRAME_HEIGHT) return flipped;
+
+    // Fallback para configurações que ainda entregam outro tamanho.
+    if (!this.rawCanvas) {
+      this.rawCanvas = document.createElement("canvas");
+      this.rawContext = this.rawCanvas.getContext("2d");
+    }
+    if (this.rawCanvas.width !== width || this.rawCanvas.height !== height) {
+      this.rawCanvas.width = width;
+      this.rawCanvas.height = height;
+    }
+    this.rawContext.putImageData(new ImageData(flipped, width, height), 0, 0);
+    this.captureContext.drawImage(
+      this.rawCanvas,
+      0,
+      0,
+      FRAME_WIDTH,
+      FRAME_HEIGHT,
+    );
+    return this.captureContext.getImageData(
+      0,
+      0,
+      FRAME_WIDTH,
+      FRAME_HEIGHT,
+    ).data;
   }
 
   async runFrame(renderGraphics = true) {
@@ -537,6 +710,10 @@ export class PspAdapter {
     this.canvas = null;
     this.captureCanvas = null;
     this.captureContext = null;
+    this.rawBuffer = null;
+    this.flippedPixels = null;
+    this.rawCanvas = null;
+    this.rawContext = null;
     this.host = null;
     this.wasmUrl = null;
   }
