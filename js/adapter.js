@@ -629,6 +629,17 @@ export class PspAdapter {
     // O canvas WebGL do core é entregue direto para o compositor da UI. Isso
     // evita gl.readPixels + flip + ImageData a 60 Hz na main thread; o capture
     // de pixels continua existindo apenas para a miniatura (toDataURL).
+    if (globalThis.__emmuPspVerboseLogs && this.gl && renderGraphics) {
+      const width = this.gl.drawingBufferWidth;
+      const height = this.gl.drawingBufferHeight;
+      if (width !== FRAME_WIDTH || height !== FRAME_HEIGHT) {
+        console.warn("[emmu-psp] drawingBuffer divergente", {
+          width,
+          height,
+          canvas: `${this.canvas.width}x${this.canvas.height}`,
+        });
+      }
+    }
     const frame = renderGraphics ? this.canvas : new Uint8ClampedArray(0);
     if (globalThis.__emmuPspVerboseLogs) {
       this.perfFrames = (this.perfFrames || 0) + 1;
